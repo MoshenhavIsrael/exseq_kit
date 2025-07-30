@@ -1,0 +1,19 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.so
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Data and results
+*.csv
+*.h5
+*.pkl
+*.npz
+*.xlsx
+*.tsv
+
+# OS-generated files
+.DS_Store
+Thumbs.db

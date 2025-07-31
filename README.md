@@ -29,4 +29,4 @@ This toolkit assumes ExSeq data in tabular formats (e.g., `RNA_with_cells.csv`, 
 
 ## License
 
-This project is for internal research use. License to be determined.
+This project is for internal research use.

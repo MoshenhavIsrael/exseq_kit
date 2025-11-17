@@ -25,6 +25,10 @@ class ProjectObject:
         self.z_scaling = z_scaling
         self._load_samples(main_folder, puncta_file_format)
 
+    def copy(self):
+        import copy
+        return copy.deepcopy(self)
+
     def _infer_condition(self, folder_name):
         name = folder_name.upper()
         if self.sick_keywords in name:
@@ -61,13 +65,37 @@ class ProjectObject:
         for item in os.listdir(main_folder):
             item_path = os.path.join(main_folder, item)
             if os.path.isdir(item_path) and puncta_file_format in os.listdir(item_path):
-                sample = SampleObject.from_files(item_path, auto_calc=self.auto_calc, xy_scaling=self.xy_scaling, z_scaling=self.z_scaling)
+                sample = SampleObject.from_files(item_path, puncta_file_format, auto_calc=self.auto_calc, xy_scaling=self.xy_scaling, z_scaling=self.z_scaling)
                 if sample.sample_name not in self.groups:
                     self.groups[sample.sample_name] = self._infer_condition(item)
                 self.conditions.add(self.groups[sample.sample_name])
                 self.samples[sample.sample_name] = sample
 
-    def analyze_cell_type_population(self, mode='relative', n_permutations=1000, x_label_size=10, y_label_size=12):
+    # def _load_shapes_from_tif(self, tif_file_format='FOV1FOV_1_round001_ch00.tif.cells.tif', tif_xy_scaling=None, tif_z_scaling=None):
+    #     """
+    #     Load shapes from TIF files in the project directory.
+    #     """
+    #     for sample_name, sample in self.samples.items():
+    #         tif_path = os.path.join(sample.sample_folder, tif_file_format)
+    #         if os.path.exists(tif_path):
+    #             sample.load_shapes_from_tif(tif_path, tif_xy_scaling=tif_xy_scaling, tif_z_scaling=tif_z_scaling)
+    #             sample.update_cells_features()
+    def collect_all_cells(self):
+        """
+        Return a combined DataFrame of all cells in the project with sample and condition labels.
+        """
+        all_cells = []
+        for sample_name, sample in self.samples.items():
+            if hasattr(sample, 'cells'):
+                df = sample.cells.copy()
+                df['sample'] = sample_name
+                df['condition'] = self.groups.get(sample_name, 'unknown')
+                all_cells.append(df)
+        if not all_cells:
+            return pd.DataFrame()
+        return pd.concat(all_cells, ignore_index=True)
+
+    def analyze_cell_type_population(self, mode='relative', n_permutations=1000, x_label_size=10, y_label_size=12, figsize=(12, 4), save_path=None):
         all_types = sorted({ct for s in self.samples.values() for ct in s.cells['cell_type'].unique()})
 
         data = []
@@ -118,15 +146,14 @@ class ProjectObject:
         from matplotlib.colors import to_rgba
 
         df_melt = df.melt(id_vars=['sample', 'group'], var_name='cell_type', value_name='count')
-        fig1, ax1 = plt.subplots(figsize=(12, 5))
+        ylabel = 'Proportion' if mode == 'relative' else 'Count'
+        fig1, ax1 = plt.subplots(figsize=figsize)
         sns.boxplot(data=df_melt, x='cell_type', y='count', hue='group',
                     palette=custom_palette, hue_order=['control', 'sick'], ax=ax1)
-        for patch in ax1.patches:  # <-- שינוי כאן
-            color = to_rgba(patch.get_facecolor(), 0.6)  # שמירת אותו צבע, alpha=0.5
+        for patch in ax1.patches:
+            color = to_rgba(patch.get_facecolor(), 0.6)
             patch.set_facecolor(color)
-            # ax1.set_title(
-        #     'Boxplot of Cell Type Proportions by Group' if mode == 'relative' else 'Boxplot of Cell Type Counts by Group')
-        ax1.set_ylabel('Proportion' if mode == 'relative' else 'Count', fontsize=y_label_size)
+        ax1.set_ylabel(ylabel, fontsize=y_label_size)
         ax1.set_xlabel('')
         ax1.tick_params(axis='x', labelsize=x_label_size)
         fig1.tight_layout()
@@ -146,10 +173,14 @@ class ProjectObject:
         # df_bar[df_bar.columns] = df_bar[df_bar.columns].div(df_bar.sum(axis=1), axis=0)
         df_bar.plot(kind='bar', stacked=True, colormap='tab20', ax=ax3)
         # ax3.set_title('Stacked Barplot of Cell Type Composition per Sample')
-        ax3.set_ylabel('Proportion' if mode == 'relative' else 'Count', fontsize=y_label_size)
+        ax3.set_ylabel(ylabel, fontsize=y_label_size)
         # ax3.tick_params(axis='x', rotation=45, ha='right')
         ax3.set_xticks(range(len(sample_order)), df_bar.index, rotation=45, ha='right')
         fig3.tight_layout()
+
+        if save_path is not None:
+            fig1.savefig(save_path + '/Celltype_'+ylabel+'_population_by_conditions', dpi=300, bbox_inches="tight")
+            fig3.savefig(save_path + '/Celltype_'+ylabel+'_population_by_samples', dpi=300, bbox_inches="tight")
 
         return df, result_df, (fig1, fig3)
 

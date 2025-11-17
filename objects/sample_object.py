@@ -1,4 +1,15 @@
+import numpy as np
+import pandas as pd
+import numpy as np
+import pandas as pd
+from libpysal.weights import full2W
+from esda.moran import Moran
+from esda.join_counts import Join_Counts
+from sklearn.neighbors import NearestNeighbors
+
 class SampleObject:
+
+
     def __init__(self, sample_folder=None, RNA_loc_df=None, sample_name=None, cell_centroids=None, cell_polygons=None, distance_matrix=None, gene_cell_matrix=None, auto_calc = False, xy_scaling = 350 / 2048, z_scaling = 0.4):
         """
         Initializes the SampleObject.
@@ -11,8 +22,9 @@ class SampleObject:
         :param auto_calc: if True - automatic calculate the distance matrix.
         :param xy_scaling / z_scaling: factor change units from pixels to micro meters.
         """
-        import numpy as np
-        import pandas as pd
+
+        # Cache for libpysal W objects (keyed by: N_cells, method, parameters)
+        self._W_cache = {}
 
         # scale coordinates
         RNA_loc_df.rename(columns={'X': 'X_pixels', 'Y': 'Y_pixels', 'Z': 'Z_pixels'}, inplace=True)
@@ -54,53 +66,55 @@ class SampleObject:
         self.sample_folder = sample_folder
         self.xy_scaling = xy_scaling
         self.z_scaling = z_scaling
-
-        # get cell centroids from parameter or calculate it from data
-        if len(np.shape(cell_centroids))>1:
-            self.cell_centroids = cell_centroids
-        else:
-            self.cell_centroids = self._create_cell_centroids()
-
-        # Get cell details if exist
-        if 'cell_id' in RNA_loc_df.columns:
-            cell_ids = RNA_loc_df['cell_id'].unique()
-            cell_ids.sort()
-            cell_ids = [str(cell_id) for cell_id in cell_ids]
-            if '0' in cell_ids:
-                cell_ids.remove('0')
-            if 0 in cell_ids:
-                cell_ids.remove(0)
-            if 'NaN' in cell_ids:
-                cell_ids.remove('NaN')
-            self.cell_ids = cell_ids
-
-            # Add cell types and centroid data and save it with cell_ids in 'cells' dataframe
-            if 'cell_type' in RNA_loc_df.columns:
-                cells = RNA_loc_df[RNA_loc_df['cell_id'].isin(cell_ids)][['cell_id', 'cell_type']]
-            else:
-                cells = pd.DataFrame(RNA_loc_df[RNA_loc_df['cell_id'].isin(cell_ids)]['cell_id'])
-            cells = cells.drop_duplicates().reset_index(drop=True)
-            cells['cell_id'] = cells['cell_id'].astype(str)
-            # sort 'cells' by 'cell_id'
-            cells.sort_values(by='cell_id', inplace=True)
-            if hasattr(self, 'cell_centroids'):
-                cells = cells.merge(self.cell_centroids, on='cell_id', how='left')
-            self.cells = cells
-
-        # get cell types if exist
-        if 'cell_type' in RNA_loc_df.columns:
-            cell_types = RNA_loc_df['cell_type'].unique().astype(str)
-            cell_types.sort()
-            cell_types = [str(cell_type) for cell_type in cell_types]
-            if 'No_type' in cell_types:
-                cell_types.remove('No_type')
-            if 'NaN' in cell_types:
-                cell_types.remove('NaN')
-            if '0' in cell_types:
-                cell_types.remove('0')
-            if 0 in cell_types:
-                cell_types.remove(0)
-            self.cell_types = cell_types
+        cells_file_format = "FOV1FOV_1_round001_ch00.tif.cells.tif"
+        self.load_cell_shapes_from_tif(cells_file_format, downsample=1, tif_xy_scaling=0.171*xy_scaling, tif_z_scaling=0.4*z_scaling)
+        self.update_cells_features(xy_scaling=8*0.171*xy_scaling, z_scaling=8*0.4*z_scaling)
+        # # get cell centroids from parameter or calculate it from data
+        # if len(np.shape(cell_centroids))>1:
+        #     self.cell_centroids = cell_centroids
+        # else:
+        #     self.cell_centroids = self._create_cell_centroids()
+        #
+        # # Get cell details if exist
+        # if 'cell_id' in RNA_loc_df.columns:
+        #     cell_ids = RNA_loc_df['cell_id'].unique()
+        #     cell_ids.sort()
+        #     cell_ids = [str(cell_id) for cell_id in cell_ids]
+        #     if '0' in cell_ids:
+        #         cell_ids.remove('0')
+        #     if 0 in cell_ids:
+        #         cell_ids.remove(0)
+        #     if 'NaN' in cell_ids:
+        #         cell_ids.remove('NaN')
+        #     self.cell_ids = cell_ids
+        #
+        #     # Add cell types and centroid data and save it with cell_ids in 'cells' dataframe
+        #     if 'cell_type' in RNA_loc_df.columns:
+        #         cells = RNA_loc_df[RNA_loc_df['cell_id'].isin(cell_ids)][['cell_id', 'cell_type']]
+        #     else:
+        #         cells = pd.DataFrame(RNA_loc_df[RNA_loc_df['cell_id'].isin(cell_ids)]['cell_id'])
+        #     cells = cells.drop_duplicates().reset_index(drop=True)
+        #     cells['cell_id'] = cells['cell_id'].astype(str)
+        #     # sort 'cells' by 'cell_id'
+        #     cells.sort_values(by='cell_id', inplace=True)
+        #     if hasattr(self, 'cell_centroids'):
+        #         cells = cells.merge(self.cell_centroids, on='cell_id', how='left')
+        #     self.cells = cells
+        #
+        # # get cell types if exist
+        # if 'cell_type' in RNA_loc_df.columns:
+        #     cell_types = RNA_loc_df['cell_type'].unique().astype(str)
+        #     cell_types.sort()
+        #     cell_types = [str(cell_type) for cell_type in cell_types]
+        #     if 'No_type' in cell_types:
+        #         cell_types.remove('No_type')
+        #     if 'NaN' in cell_types:
+        #         cell_types.remove('NaN')
+        #     if '0' in cell_types:
+        #         cell_types.remove('0')
+        #     if 0 in cell_types:
+        #         cell_types.remove(0)
+        #     self.cell_types = cell_types
 
         # calculate gene cell matrix from data
         if auto_calc:
@@ -123,10 +137,16 @@ class SampleObject:
             self.gene_info = self.gene_info.join(total_counts.rename('total_counts'))
             self.gene_info['external_counts'] = self.gene_info['total_counts'] - self.gene_info['expression_in_cells']
 
-            # get distance matrix from parameter or calculate it from data
-        if len(np.shape(distance_matrix))>1:
+        # get distance matrix from parameter or calculate it from data
+        if len(np.shape(distance_matrix)) > 1:
             self.distance_matrix = distance_matrix
             distance_matrix.index = distance_matrix.index.astype(str)
+            distance_matrix.columns = distance_matrix.columns.astype(str)
+
+            # --- Clean cell IDs: keep only the numeric part before the first underscore
+            distance_matrix.index = [cid.split('_')[0] for cid in distance_matrix.index]
+            distance_matrix.columns = [cid.split('_')[0] for cid in distance_matrix.columns]
+
         elif auto_calc:
             self.calculate_distance_matrix(print_stages=True)
 
@@ -158,11 +178,11 @@ class SampleObject:
                 return cls(sample_folder, RNA_loc_df, None, None, auto_calc=auto_calc, xy_scaling=xy_scaling, z_scaling=z_scaling)
 
             elif RNA_file is None or distance_matrix_file is None or gene_cell_matrix_file is None:
-                if "RNA_with_cells.csv" in csv_files:
+                if RNA_file is None and "RNA_with_cells.csv" in csv_files:
                     RNA_file = os.path.join(sample_folder, "RNA_with_cells.csv")
-                if "gene_cell_matrix.csv" in csv_files:
+                if gene_cell_matrix_file is None and "gene_cell_matrix.csv" in csv_files:
                     gene_cell_matrix_file = os.path.join(sample_folder, "gene_cell_matrix.csv")
-                if "distance_matrix.csv" in csv_files:
+                if distance_matrix_file is None and "distance_matrix.csv" in csv_files:
                     distance_matrix_file = os.path.join(sample_folder, "distance_matrix.csv")
 
         # If RNA_file, distance_matrix_file, or gene_cell_matrix_file are not provided yet, get them from user input
@@ -178,6 +198,8 @@ class SampleObject:
                 sample_folder = input("Enter the path for the sample folder: ") or None
 
         # Load files and create the SampleObject instance
+        if not os.path.dirname(RNA_file):
+            RNA_file = os.path.join(sample_folder, RNA_file)
         RNA_loc_df = pd.read_csv(RNA_file) if RNA_file else None
         cell_centroids = pd.read_csv(centroids_file) if centroids_file else None
         cell_polygons = json.load(open(polygons_file)) if polygons_file else None
@@ -185,6 +207,181 @@ class SampleObject:
         gene_cell_matrix = pd.read_csv(gene_cell_matrix_file, header=0, index_col=0) if gene_cell_matrix_file else None
 
         return cls(sample_folder=sample_folder, RNA_loc_df=RNA_loc_df, cell_centroids=cell_centroids, cell_polygons=cell_polygons, distance_matrix=distance_matrix, gene_cell_matrix=gene_cell_matrix, auto_calc=auto_calc, xy_scaling=xy_scaling, z_scaling=z_scaling)
+
+    def copy(self):
+        import copy
+        return copy.deepcopy(self)
+
+    def update_cells_features(self, xy_scaling=None, z_scaling=None):
+        """
+        Constructs or updates self.cells table using TIF (preferred) or RNA data.
+        Combines voxel geometry, RNA puncta, centroids, convex hulls, and derived features.
+        """
+        assert hasattr(self, 'RNA_loc_df'), "RNA_loc_df is required."
+
+        import pandas as pd
+        from scipy.spatial import ConvexHull
+
+        # Use provided scaling or default to object attributes
+        xy_scaling = xy_scaling if xy_scaling is not None else self.xy_scaling
+        z_scaling = z_scaling if z_scaling is not None else self.z_scaling
+
+        # --- Determine base list of cell IDs ---
+        if hasattr(self, 'cell_voxels'):
+            base_cell_ids = self.cell_voxels['cell_id'].astype(str).unique()
+        else:
+            base_cell_ids = self.RNA_loc_df['cell_id'].astype(str).unique()
+
+        # --- Initialize cells table ---
+        cells = pd.DataFrame({'cell_id': base_cell_ids})
+
+        # --- Add number of punctas ---
+        puncta_counts = self.RNA_loc_df['cell_id'].value_counts().rename('num_punctas').astype(int)
+        puncta_counts.index = puncta_counts.index.astype(str)
+        cells = cells.merge(puncta_counts, left_on='cell_id', right_index=True, how='left')
+        cells['num_punctas'] = cells['num_punctas'].fillna(0).astype(int)
+
+        # --- Add puncta-based centroids ---
+        centroids = self.RNA_loc_df.groupby('cell_id')[['X', 'Y', 'Z']].mean().reset_index()
+        centroids.rename(columns={'X': 'X_centroid', 'Y': 'Y_centroid', 'Z': 'Z_centroid'}, inplace=True)
+        centroids['cell_id'] = centroids['cell_id'].astype(str)
+        cells = cells.merge(centroids, on='cell_id', how='left')
+
+        # --- Add voxel-based features if available ---
+        if hasattr(self, 'cell_voxels'):
+            voxel_features = self.cell_voxels.groupby('cell_id')[['X', 'Y', 'Z']].agg(
+                cell_volume_voxels=('X', 'count'), # Count of voxels per cell,
+                voxel_centroid_x=('X', 'mean'),
+                voxel_centroid_y=('Y', 'mean'),
+                voxel_centroid_z=('Z', 'mean'),
+                Z_min=('Z', 'min'),
+                Z_max=('Z', 'max')
+            ).reset_index()
+            voxel_features['cell_id'] = voxel_features['cell_id'].astype(str)
+            voxel_features['Z_span'] = voxel_features['Z_max'] - voxel_features['Z_min']
+            # Fix volume calculation
+            voxel_features['cell_volume_voxels'] = voxel_features['cell_volume_voxels'] * (xy_scaling ** 2) * z_scaling
+            cells = cells.merge(voxel_features.drop(columns=['Z_min', 'Z_max']), on='cell_id', how='left')
+
+        # --- Add convex hull features if available ---
+        if hasattr(self, 'cell_hulls') and isinstance(self.cell_hulls, dict):
+            convex_data = []
+            for cid, hull in self.cell_hulls.items():
+                if hull is not None:
+                    points = hull[['X', 'Y', 'Z']].values
+                    if len(points) >= 4:
+                        ch = ConvexHull(points)
+                        convex_data.append({
+                            'cell_id': cid,
+                            'convex_volume': ch.volume,
+                            'convex_area': ch.area
+                        })
+            if convex_data:
+                df_convex = pd.DataFrame(convex_data)
+                df_convex['cell_id'] = df_convex['cell_id'].astype(str)
+                cells = cells.merge(df_convex, on='cell_id', how='left')
+
+        # --- Derived features ---
+        if 'cell_volume_voxels' in cells.columns:
+            cells['density'] = cells['num_punctas'] / (cells['cell_volume_voxels'] + 1e-3)
+        if 'convex_volume' in cells.columns and 'cell_volume_voxels' in cells.columns:
+            cells['compactness'] = cells['cell_volume_voxels'] / (cells['convex_volume'] + 1e-3)
+
+        # --- Remove background cell with ID '0' ---
+        cells = cells[cells['cell_id'] != '0']
+
+        # --- Add cell_type if exists in RNA_loc_df ---
+        if 'cell_type' in self.RNA_loc_df.columns:
+            type_counts = self.RNA_loc_df.groupby('cell_id')['cell_type'].nunique()
+            ambiguous = type_counts[type_counts > 1].index.astype(str).tolist()
+            if ambiguous:
+                print(f"Warning: inconsistent cell_type assignments for cell_ids: {ambiguous}")
+            cell_types = self.RNA_loc_df[['cell_id', 'cell_type']].drop_duplicates()
+            cell_types['cell_id'] = cell_types['cell_id'].astype(str)
+            cell_types['cell_type'] = cell_types['cell_type'].astype(str)
+            cells = cells.merge(cell_types, on='cell_id', how='left')
+            # cells['cell_type'].fillna("type_nan", inplace=True)
+
+        # Store the updated cells DataFrame
+        self.cells = cells
+        self.cells.cell_type.fillna("type_nan", inplace=True)
+
+    def load_cell_shapes_from_tif(self, file_path, downsample=1, tif_xy_scaling=None, tif_z_scaling=None):
+        """
+        Load a 3D labeled TIF of cells and extract geometric features per cell.
+
+        Parameters:
+        - file_path: path to the TIF file (3D numpy array with cell labels).
+        - downsample: factor to reduce spatial resolution for speed.
+        - tif_xy_scaling, tif_z_scaling: optional overrides for TIF resolution (in µm per voxel).
+
+        This updates:
+        - self.cell_voxels: DataFrame with X,Y,Z positions and cell IDs
+        - self.cell_hulls: dictionary with convex hull points per cell
+        - self.cells: adds 'cell_volume_voxels', 'centroid_x/y/z', 'convex_area', 'convex_volume'
+        """
+        import os
+        import numpy as np
+        import pandas as pd
+        from skimage import io
+        from scipy.spatial import ConvexHull
+
+        factor = 8 * downsample
+        xy_scale = tif_xy_scaling if tif_xy_scaling is not None else self.xy_scaling
+        z_scale = tif_z_scaling if tif_z_scaling is not None else self.z_scaling
+
+        if not os.path.dirname(file_path):
+            file_path = os.path.join(self.sample_folder, file_path)
+        cells = io.imread(file_path)
+        if downsample > 1:
+            cells = cells[::downsample, ::downsample, ::downsample]
+
+        coords = pd.DataFrame(np.argwhere(cells), columns=['z_pixel', 'x_pixel', 'y_pixel'])
+        # Rename columns to match RNA data format
+        coords.rename(columns={'x_pixel': 'y_pixel', 'y_pixel': 'x_pixel'}, inplace=True)
+        coords['cell_id'] = cells[cells != 0]
+        coords = coords[coords['cell_id'] != 0]
+
+        coords['X'] = coords['x_pixel'] * xy_scale * factor
+        coords['Y'] = coords['y_pixel'] * xy_scale * factor
+        coords['Z'] = coords['z_pixel'] * z_scale * factor
+
+        self.cell_voxels = coords
+        self.cell_voxels['cell_id'] = self.cell_voxels['cell_id'].astype(str)
+        self.cell_hulls = {}
+
+        cell_features = []
+        for cid, group in coords.groupby('cell_id'):
+            voxel_volume = len(group)
+            centroid = group[['X', 'Y', 'Z']].mean().values
+            try:
+                hull = ConvexHull(group[['X', 'Y', 'Z']])
+                convex_area = hull.area
+                convex_volume = hull.volume
+                self.cell_hulls[str(cid)] = group.iloc[np.unique(hull.simplices.reshape(-1))]
+            except:
+                convex_area = np.nan
+                convex_volume = np.nan
+                self.cell_hulls[str(cid)] = None
+        #
+        #     cell_features.append({
+        #         'cell_id': str(cid),
+        #         'cell_volume_voxels': voxel_volume,
+        #         'centroid_x': centroid[0],
+        #         'centroid_y': centroid[1],
+        #         'centroid_z': centroid[2],
+        #         'convex_area': convex_area,
+        #         'convex_volume': convex_volume
+        #     })
+        #
+        # df_features = pd.DataFrame(cell_features)
+        #
+        # if hasattr(self, 'cells') and 'cell_id' in self.cells.columns:
+        #     self.cells['cell_id'] = self.cells['cell_id'].astype(str)
+        #     df_features['cell_id'] = df_features['cell_id'].astype(str)
+        #     self.cells = self.cells.merge(df_features, on='cell_id', how='left')
+        # else:
+        #     self.cells = df_features
 
     def _create_gene_cell_matrix(self, output_file="gene_cell_matrix.csv"):
         """
@@ -322,7 +519,7 @@ class SampleObject:
         if 'cell_id' not in self.RNA_loc_df.columns:
             return None
 
-        # Calculate centroids
+        # Calculate puncta-based centroids
         cell_centroids = self.RNA_loc_df.groupby('cell_id')[['X', 'Y', 'Z']].mean().reset_index()
         cell_centroids.rename(columns={'X': 'X_centroid', 'Y': 'Y_centroid', 'Z': 'Z_centroid'}, inplace=True)
         # sort the cell centroids by cell_id
@@ -337,7 +534,340 @@ class SampleObject:
 
         return cell_centroids
 
-    def calculate_spatial_morans_I(self, weight_func="inverse", power=2, k=5, sigma=10, normalize_counts=False, save_results=True):
+    def _build_weights_matrix(self, dist_matrix, weight_func="inverse", power=2, k=5, sigma=10):
+        """
+        Build a dense weights matrix from a dense distance matrix, without converting to a libpysal W.
+
+        Parameters
+        ----------
+        dist_matrix : (N, N) np.ndarray
+            Pairwise distances aligned to cell_ids order.
+        weight_func : {'inverse', 'fixed_k', 'gaussian'}
+            Weighting scheme.
+        power : int or float
+            Exponent for inverse distance (used when weight_func == 'inverse').
+        k : int
+            Number of neighbors (used when weight_func == 'fixed_k').
+        sigma : float
+            Gaussian kernel sigma (used when weight_func == 'gaussian').
+
+        Returns
+        -------
+        weights : (N, N) np.ndarray
+            Dense weight matrix.
+        """
+        if weight_func == "inverse":
+            # w_ij = 1 / d_ij^power (0 on the diagonal and for zero distances)
+            weights = np.where(dist_matrix > 0, np.power(dist_matrix, -power), 0.0)
+
+        elif weight_func == "fixed_k":
+            # Build KNN graph using a precomputed distance matrix
+            dm = dist_matrix.copy()
+            np.fill_diagonal(dm, 0.0)
+            nn = NearestNeighbors(n_neighbors=k, metric="precomputed")
+            nn.fit(dm)
+            _, idxs = nn.kneighbors(dm)
+            weights = np.zeros_like(dist_matrix, dtype=float)
+            for i, neigh in enumerate(idxs):
+                weights[i, neigh] = 1.0
+
+        elif weight_func == "gaussian":
+            # w_ij = exp( - d_ij^2 / (2 * sigma^2) )
+            weights = np.exp(-(dist_matrix ** 2) / (2.0 * (sigma ** 2)))
+            np.fill_diagonal(weights, 0.0)
+
+        else:
+            raise ValueError("Unsupported weight_func. Choose 'inverse', 'fixed_k', or 'gaussian'.")
+
+        np.fill_diagonal(weights, 0.0)
+        return weights
+
+    def _get_or_make_W(self, cell_ids, weight_func="inverse", power=2, k=5, sigma=10):
+        """
+        Create (or fetch from cache) a libpysal W object consistent with the given cell_ids order and parameters.
+
+        Notes
+        -----
+        - Ensures self.distance_matrix is aligned to the given cell_ids order.
+        - Caches by (N_cells, weight_func, power, k, sigma) to avoid recomputing.
+        """
+        # Align distance matrix to cell_ids (as strings)
+        self.distance_matrix.index = self.distance_matrix.index.astype(str)
+        self.distance_matrix.columns = self.distance_matrix.columns.astype(str)
+        dist_mat = self.distance_matrix.loc[cell_ids, cell_ids].values
+
+        key = (len(cell_ids), weight_func, float(power), int(k), float(sigma))
+        if key in self._W_cache:
+            return self._W_cache[key]
+
+        weights = self._build_weights_matrix(dist_mat, weight_func=weight_func, power=power, k=k, sigma=sigma)
+        W = full2W(weights, ids=list(cell_ids))
+
+        self._W_cache[key] = W
+        return W
+
+    @staticmethod
+    def _is_binary_vector(y):
+        """
+        Return True if y is strictly binary {0,1} (or constant, which is a degenerate binary).
+        """
+        y = np.asarray(y, dtype=float)
+        uv = np.unique(y[~np.isnan(y)])
+        return np.all(np.isin(uv, [0.0, 1.0])) or (uv.size == 1)
+
+    @staticmethod
+    def _safe_moran(y, W, permutations=999):
+        """
+        Robust Moran's I wrapper:
+        - If y has zero variance (constant vector), return (I=NaN, z=0, p=1) without warnings.
+        - Otherwise, compute standard esda.Moran with permutations.
+        """
+        y = np.asarray(y, dtype=float)
+        if y.size == 0 or np.allclose(y, y[0]):
+            return dict(I=np.nan, z=0.0, p=1.0)
+        mor = Moran(y, W, permutations=permutations)
+        return dict(I=mor.I, z=mor.z_sim, p=mor.p_z_sim)
+
+    def _run_spatial_stats(
+        self,
+        signals: dict,              # mapping: name -> 1D np.ndarray aligned to cell_ids
+        cell_ids,
+        weight_func="inverse",
+        power=2,
+        k=5,
+        sigma=10,
+        do_moran=True,
+        do_join_counts=True,
+        permutations=999
+    ):
+        """
+        Core engine: given multiple signals on the same cell lattice, compute Moran's I for all,
+        and Join Counts for binary signals.
+
+        Parameters
+        ----------
+        signals : dict[str, np.ndarray]
+            Each vector must be aligned to the same cell_ids order.
+        cell_ids : list[str]
+            Cell IDs order used to align W and signals.
+        weight_func, power, k, sigma : see _build_weights_matrix
+        do_moran : bool
+            If True, compute Moran's I for all signals.
+        do_join_counts : bool
+            If True, compute Join Counts for binary signals only.
+        permutations : int
+            Number of permutations for both Moran and Join Counts.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per signal with Moran/JC stats and metadata.
+        """
+        W = self._get_or_make_W(cell_ids, weight_func=weight_func, power=power, k=k, sigma=sigma)
+        rows = []
+        for name, y in signals.items():
+            y = np.asarray(y, dtype=float)
+
+            # Moran's I (works for continuous and binary)
+            I = z = p = np.nan
+            if do_moran:
+                m = self._safe_moran(y, W, permutations=permutations)
+                I, z, p = m["I"], m["z"], m["p"]
+
+            # Join Counts (only meaningful for strictly binary, non-constant vectors)
+            jc_bb = jc_bw = jc_ww = np.nan
+            jc_bb_p = np.nan
+            if do_join_counts and self._is_binary_vector(y):
+                uv = np.unique(y[~np.isnan(y)])
+                if uv.size == 2:  # not constant, true 0/1
+                    jc = Join_Counts(y, W, permutations=permutations)
+                    jc_bb, jc_bw, jc_ww = jc.bb, jc.bw, jc.ww
+                    # permutation p-value for BB from esda API
+                    jc_bb_p = jc.p_sim_bb
+                    # direction of spatial pattern
+                    jc_bb_dir = "clustered" if jc_bb > jc.mean_bb else "dispersed"
+
+                    # Chi Squared statistic and p-value
+                    jc_chi2 = jc.chi2
+                    jc_chi2_p = jc.chi2_p  # analytic p-value
+                    jc_p_sim_chi2 = jc.p_sim_chi2  # permutation p-value for chi2
+
+            rows.append({
+                "name": name,
+                "Moran_I": I, "Moran_z": z, "Moran_p": p,
+                "JC_BB": jc_bb, "JC_BW": jc_bw, "JC_WW": jc_ww,
+                "JC_BB_p": jc_bb_p, "JC_BB_dir": jc_bb_dir, "JC_chi2": jc_chi2,
+                "JC_chi2_p": jc_chi2_p, "JC_p_sim_chi2": jc_p_sim_chi2,
+                "weight_method": weight_func,
+                "weight_param": dict(inverse=power, fixed_k=k, gaussian=sigma).get(weight_func),
+                "n_cells": len(cell_ids),
+                "n_ones": int(np.nansum(y)) if self._is_binary_vector(y) else np.nan
+            })
+
+        return pd.DataFrame(rows).sort_values(["Moran_p", "Moran_I"], na_position="last")
+
+    # -----------------------------
+    # Genes: unified API (continuous)
+    # -----------------------------
+    def calculate_spatial_stats_for_genes(
+        self,
+        weight_func="inverse", power=2, k=5, sigma=10,
+        normalize_counts=False,
+        permutations=999,
+        save_results=True
+    ):
+        """
+        Compute Moran's I for each gene (continuous signal per cell).
+        Join Counts is disabled for genes.
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        if getattr(self, "distance_matrix", None) is None:
+            raise ValueError("Distance matrix is missing. Calculate it first.")
+        if getattr(self, "gene_cell_matrix", None) is None:
+            raise ValueError("Gene-cell matrix is missing. Calculate it first.")
+
+        gcm = self.gene_cell_matrix.copy()
+        gcm.columns = gcm.columns.astype(str)
+
+        # Drop problematic columns named 0
+        for bad in (0, "0"):
+            if bad in gcm.columns:
+                gcm = gcm.drop(columns=bad)
+
+        # --- Keep only cells that exist in distance matrix ---
+        dm = self.distance_matrix.copy()
+        dm.index = dm.index.astype(str);
+        dm.columns = dm.columns.astype(str)
+        valid_cols = [cid for cid in gcm.columns if cid in dm.index]
+        gcm = gcm[valid_cols]
+
+        cell_ids = gcm.columns
+
+        # Optional per-cell normalization (column-wise)
+        if normalize_counts:
+            gcm = gcm.div(gcm.sum(axis=0), axis=1)
+
+        # Build signals: each gene -> vector over cells
+        signals = {gene: gcm.loc[gene].values for gene in gcm.index}
+
+        df = self._run_spatial_stats(
+            signals, cell_ids,
+            weight_func=weight_func, power=power, k=k, sigma=sigma,
+            do_moran=True, do_join_counts=False,
+            permutations=permutations
+        ).rename(columns={"name": "Gene"})
+
+        # Optional enrichment from self.gene_info
+        if hasattr(self, "gene_info"):
+            extra_cols = ["total_counts", "expression_in_cells", "num_cells"]
+            extra = self.gene_info[[c for c in extra_cols if c in self.gene_info.columns]].copy()
+            df = df.merge(extra, left_on="Gene", right_index=True, how="left")
+            if normalize_counts:
+                # Optional display-only normalization of counts
+                if "total_counts" in df:
+                    s1 = df["total_counts"].sum(skipna=True)
+                    if s1 and s1 > 0:
+                        df["normalized_counts (total)"] = df["total_counts"] / s1
+                if "expression_in_cells" in df:
+                    s2 = df["expression_in_cells"].sum(skipna=True)
+                    if s2 and s2 > 0:
+                        df["normalized_counts (in cells)"] = df["expression_in_cells"] / s2
+
+        if save_results:
+            norm_tag = "_normalized" if normalize_counts else ""
+            param = dict(inverse=power, fixed_k=k, gaussian=sigma)[weight_func]
+            out = f"{self.sample_folder}/genes_spatial_stats_{weight_func}_{param}{norm_tag}.csv"
+            df.to_csv(out, index=False)
+
+        return df
+
+    # --------------------------------
+    # Cell types: unified API (binary)
+    # --------------------------------
+    def calculate_spatial_stats_for_celltypes(
+        self,
+        weight_func="inverse", power=2, k=5, sigma=10,
+        include_join_counts=True,
+        permutations=999,
+        save_results=True,
+        drop_labels=("No_type", "NaN", "0")
+    ):
+        """
+        Compute Moran's I (and optionally Join Counts) for each cell type using one-vs-rest binary signals.
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        if getattr(self, "distance_matrix", None) is None:
+            raise ValueError("Distance matrix is missing. Calculate it first.")
+        if not hasattr(self, "cells") or "cell_id" not in self.cells or "cell_type" not in self.cells:
+            raise ValueError("cells DataFrame with ['cell_id','cell_type'] is required.")
+
+        cells = self.cells.copy()
+        cells["cell_id"] = cells["cell_id"].astype(str)
+        cells["cell_type"] = cells["cell_type"].astype(str)
+        cells = cells.set_index("cell_id")
+
+        # --- Filter cells that have molecular content (num_punctas > 0) and exist in distance matrix ---
+        dm = self.distance_matrix.copy()
+        dm.index = dm.index.astype(str);
+        dm.columns = dm.columns.astype(str)
+        content_ids = set(cells.index[cells["num_punctas"].fillna(0) > 0].astype(str))
+        ids_in_dm = set(dm.index)
+        cell_ids = sorted(content_ids & ids_in_dm)
+        cells = cells.loc[cell_ids]
+
+        cell_ids = cells.index.astype(str).tolist()
+
+        # Collect distinct cell types (drop specified labels)
+        all_types = [t for t in cells["cell_type"].unique() if t not in set(drop_labels)]
+        all_types = sorted(all_types)
+
+        # Build binary signals: each type -> 0/1 vector over cells
+        signals = {}
+        ct_series = cells["cell_type"]
+        for ct in all_types:
+            y = (ct_series == ct).reindex(cell_ids).astype(int).values
+            signals[ct] = y
+
+        df = self._run_spatial_stats(
+            signals, cell_ids,
+            weight_func=weight_func, power=power, k=k, sigma=sigma,
+            do_moran=True, do_join_counts=include_join_counts,
+            permutations=permutations
+        ).rename(columns={"name": "cell_type"})
+
+        if save_results:
+            param = dict(inverse=power, fixed_k=k, gaussian=sigma)[weight_func]
+            out = f"{self.sample_folder}/celltypes_spatial_stats_{weight_func}_{param}.csv"
+            df.to_csv(out, index=False)
+
+        return df
+
+    # -----------------------------
+    # Backward-compatible wrapper
+    # -----------------------------
+    def calculate_spatial_morans_I(
+        self,
+        weight_func="inverse", power=2, k=5, sigma=10,
+        normalize_counts=False, save_results=True, permutations=999
+    ):
+        """
+        Backward-compatible method: returns Moran's I for genes only.
+        This calls the new unified genes method under the hood.
+        """
+        return self.calculate_spatial_stats_for_genes(
+            weight_func=weight_func, power=power, k=k, sigma=sigma,
+            normalize_counts=normalize_counts,
+            permutations=permutations,
+            save_results=save_results
+        )
+
+    def calculate_spatial_morans_I_old(self, weight_func="inverse", power=2, k=5, sigma=10, normalize_counts=False, save_results=True):
         """
         Calculates spatial Moran's I for each gene in the sample using the esda package.
 
@@ -950,3 +1480,93 @@ class SampleObject:
         # plt.show()
         # endregion
 
+    def plot_cell_with_puncta(self, cell_ids, gene_filter=None, opacity=0.2, use_voxels=False):
+        """
+        Display 3D convex hulls or voxel clouds of selected cells along with their RNA puncta.
+
+        Parameters:
+        - cell_ids: str or list of str, cell ID(s) to plot
+        - gene_filter: optional str or list of str to filter puncta by gene name
+        - opacity: float between 0 and 1 for the hull transparency
+        - use_voxels: if True, plot cell using voxel cloud instead of convex hull
+        """
+        import plotly.graph_objects as go
+        import plotly.express as px
+
+        if isinstance(cell_ids, str):
+            cell_ids = [cell_ids]
+        if gene_filter is not None and isinstance(gene_filter, str):
+            gene_filter = [gene_filter]
+
+        fig = go.Figure()
+        colors = px.colors.qualitative.Set2  # default color cycle
+
+        for idx, cid in enumerate(cell_ids):
+            if use_voxels and hasattr(self, 'cell_voxels'):
+                points = self.cell_voxels[self.cell_voxels['cell_id'] == str(cid)]
+                fig.add_trace(go.Scatter3d(
+                    x=points['X'], y=points['Y'], z=points['Z'],
+                    mode='markers',
+                    marker=dict(size=1.5, color=colors[idx % len(colors)], opacity=opacity),
+                    name=f"Cell {cid} (voxels)"
+                ))
+            else:
+                hull_points = self.cell_hulls.get(str(cid))
+                if hull_points is None:
+                    continue
+
+                # Create mesh from convex hull
+                from scipy.spatial import ConvexHull
+                hull = ConvexHull(hull_points[['X', 'Y', 'Z']])
+                simplices = hull.simplices
+
+                fig.add_trace(go.Mesh3d(
+                    x=hull_points['X'],
+                    y=hull_points['Y'],
+                    z=hull_points['Z'],
+                    i=simplices[:, 0],
+                    j=simplices[:, 1],
+                    k=simplices[:, 2],
+                    color=colors[idx % len(colors)],
+                    opacity=opacity,
+                    name=f"Cell {cid}"
+                ))
+
+        # Plot puncta
+        df = self.RNA_loc_df.copy()
+        df = df[df['cell_id'].isin(cell_ids)]
+        if gene_filter is not None:
+            df = df[df['gene'].isin(gene_filter)]
+
+        edit_mode = True
+        if edit_mode:
+            for i, gene in enumerate(df['gene'].unique()):
+                for cell in cell_ids:
+                    sub = df[(df['gene'] == gene) & (df['cell_id'] == cell)]
+                    fig.add_trace(go.Scatter3d(
+                        x=sub['X'], y=sub['Y'], z=sub['Z'],
+                        mode='markers',
+                        marker=dict(size=3, color=colors[i % len(colors)]),
+                        name=f"{gene} (c={cell})"
+                    ))
+        else:
+            for i, gene in enumerate(df['gene'].unique()):
+                sub = df[df['gene'] == gene]
+                fig.add_trace(go.Scatter3d(
+                    x=sub['X'], y=sub['Y'], z=sub['Z'],
+                    mode='markers',
+                    marker=dict(size=3, color=colors[i % len(colors)]),
+                    name=gene
+                ))
+
+        fig.update_layout(
+            scene=dict(
+                xaxis_title='X (µm)',
+                yaxis_title='Y (µm)',
+                zaxis_title='Z (µm)'
+            ),
+            title=f"Cell(s) {', '.join(cell_ids)} with RNA Puncta",
+            width=800, height=700,
+            margin=dict(l=0, r=0, b=0, t=30)
+        )
+        fig.show()

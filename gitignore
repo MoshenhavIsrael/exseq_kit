@@ -6,6 +6,9 @@ __pycache__/
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
 
+# check.py script
+check.py
+
 # Data and results
 *.csv
 *.h5

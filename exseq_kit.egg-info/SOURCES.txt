@@ -1,0 +1,13 @@
+README.md
+setup.py
+exseq_kit.egg-info/PKG-INFO
+exseq_kit.egg-info/SOURCES.txt
+exseq_kit.egg-info/dependency_links.txt
+exseq_kit.egg-info/not-zip-safe
+exseq_kit.egg-info/requires.txt
+exseq_kit.egg-info/top_level.txt
+io/__init__.py
+objects/__init__.py
+objects/project_object.py
+objects/sample_object.py
+visualization/__init__.py

@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *.so
+*.pyc
+*.egg-info/
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
@@ -20,3 +22,12 @@ check.py
 # OS-generated files
 .DS_Store
 Thumbs.db
+
+# VS Code files
+.vscode/
+
+# PyCharm files (or other IDE)
+.idea/
+
+# Git merge/rebase backup files
+*.orig

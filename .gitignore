@@ -5,8 +5,9 @@ __pycache__/
 *.pyc
 *.egg-info/
 
-# Jupyter notebook checkpoints
+# Jupyter notebook checkpoints and virtual documents
 .ipynb_checkpoints/
+.virtual_documents/
 
 # check.py script
 check.py
